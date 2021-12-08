@@ -1,5 +1,10 @@
-import torch
-import torch.utils.data as data
+import sys
+import os
+curPath = os.path.abspath(os.path.dirname(__file__))
+rootPath = os.path.split(curPath)[0]
+sys.path.append(rootPath)
+
+import tensorflow as tf
 import random
 import math
 import os
@@ -11,7 +16,7 @@ import numpy as np
 import pprint
 pp = pprint.PrettyPrinter(indent=1)
 import re
-import time
+# import timePYT
 import nltk
 nltk.download('punkt')
 
