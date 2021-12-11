@@ -4,18 +4,12 @@ curPath = os.path.abspath(os.path.dirname(__file__))
 rootPath = os.path.split(curPath)[0]
 sys.path.append(rootPath)
 
-import tensorflow as tf
-import random
-import math
 import os
-import logging 
 from utils import config
 import pickle
-from tqdm import tqdm
 import numpy as np
 import pprint
 pp = pprint.PrettyPrinter(indent=1)
-import re
 # import timePYT
 import nltk
 nltk.download('punkt')
@@ -49,6 +43,8 @@ def clean(sentence, word_pairs):
         sentence = sentence.replace(k,v)
     sentence = nltk.word_tokenize(sentence)
     return sentence
+
+
 def read_langs(vocab):
     word_pairs = {"it's":"it is", "don't":"do not", "doesn't":"does not", "didn't":"did not", "you'd":"you would", "you're":"you are", "you'll":"you will", "i'm":"i am", "they're":"they are", "that's":"that is", "what's":"what is", "couldn't":"could not", "i've":"i have", "we've":"we have", "can't":"cannot", "i'd":"i would", "i'd":"i would", "aren't":"are not", "isn't":"is not", "wasn't":"was not", "weren't":"were not", "won't":"will not", "there's":"there is", "there're":"there are"}
     train_context = np.load('empathetic-dialogue/sys_dialog_texts.train.npy',allow_pickle=True)
@@ -147,4 +143,3 @@ def load_dataset():
         print('[target]:', ' '.join(data_tra['target'][i]))
         print(" ")
     return data_tra, data_val, data_tst, vocab
-
