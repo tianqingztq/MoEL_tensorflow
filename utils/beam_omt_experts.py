@@ -4,7 +4,7 @@
     https://github.com/OpenNMT/OpenNMT-py/blob/master/onmt/Beam.py
 """
 
-import torch
+import tensorflow as tf
 import numpy as np
 from utils import config
 import torch.nn.functional as F
@@ -22,14 +22,14 @@ class Beam():
         self._done = False
 
         # The score for each translation on the beam.
-        self.scores = torch.zeros((size,), dtype=torch.float, device=device)
+        self.scores = tf.zeros([size,], dtype=tf.int64)
         self.all_scores = []
 
         # The backpointers at each time-step.
         self.prev_ks = []
 
         # The outputs at each time-step.
-        self.next_ys = [torch.full((size,), config.PAD_idx, dtype=torch.long, device=device)]
+        self.next_ys = [tf.fill([size,], config.PAD_idx, dtype=tf.int64, device=device)]
         self.next_ys[0][0] = config.SOS_idx
 
     def get_current_state(self):
@@ -50,7 +50,7 @@ class Beam():
 
         # Sum the previous scores.
         if len(self.prev_ks) > 0:
-            beam_lk = word_prob + self.scores.unsqueeze(1).expand_as(word_prob)
+            beam_lk = word_prob + tf.expand_dims(self.scores, 1).reshape(word_prob.shape)
         else:
             beam_lk = word_prob[0]
 
@@ -77,7 +77,7 @@ class Beam():
 
     def sort_scores(self):
         "Sort the scores."
-        return torch.sort(self.scores, 0, True)
+        return tf.sort(self.scores, 0, 'DESCENDING')
 
     def get_the_best_score_and_idx(self):
         "Get the score of the best in the beam."
@@ -88,12 +88,12 @@ class Beam():
         "Get the decoded sequence for the current timestep."
 
         if len(self.next_ys) == 1:
-            dec_seq = self.next_ys[0].unsqueeze(1)
+            dec_seq = tf.expand_dims(self.next_ys[0], 1)
         else:
             _, keys = self.sort_scores()
             hyps = [self.get_hypothesis(k) for k in keys]
             hyps = [[config.SOS_idx] + h for h in hyps]
-            dec_seq = torch.LongTensor(hyps)
+            dec_seq = tf.Variable(hyps, dtype=tf.int64)
 
         return dec_seq
 
@@ -115,7 +115,6 @@ class Translator(object):
         self.lang = lang
         self.vocab_size = lang.n_words
         self.beam_size = config.beam_size
-        self.device = torch.device('cuda' if config.USE_CUDA else 'cpu')
 
 
     def beam_search(self, src_seq, max_dec_step):
@@ -143,7 +142,7 @@ class Translator(object):
             # so the decoder will not run on completed sentences.
             n_prev_active_inst = len(inst_idx_to_position_map)
             active_inst_idx = [inst_idx_to_position_map[k] for k in active_inst_idx_list]
-            active_inst_idx = torch.LongTensor(active_inst_idx).to(self.device)
+            active_inst_idx = tf.Variable(active_inst_idx, dtype=tf.int64)
 
             active_src_seq = collect_active_part(src_seq, active_inst_idx, n_prev_active_inst, n_bm)
             active_src_enc = collect_active_part(src_enc, active_inst_idx, n_prev_active_inst, n_bm)
@@ -159,33 +158,34 @@ class Translator(object):
 
             def prepare_beam_dec_seq(inst_dec_beams, len_dec_seq):
                 dec_partial_seq = [b.get_current_state() for b in inst_dec_beams if not b.done]
-                dec_partial_seq = torch.stack(dec_partial_seq).to(self.device)
+                dec_partial_seq = tf.stack(dec_partial_seq, axis=0)
                 dec_partial_seq = dec_partial_seq.view(-1, len_dec_seq)
                 return dec_partial_seq
             
             def prepare_beam_dec_atten(inst_dec_beams):
                 atten = [self.attention_parameters[i] for i, b in enumerate(inst_dec_beams) if not b.done]
-                atten = torch.stack(atten).to(self.device)
+                atten = tf.stack(atten, axis=0)
                 atten = atten.view(-1, self.len_program, 1,1)
                 atten = atten.repeat(1, n_bm, 1, 1).view(-1, self.len_program, 1,1)
                 return atten
             
             def prepare_beam_target(inst_dec_beams):
-                tgt_program = [torch.Tensor(batch['target_program'])[i] for i, b in enumerate(inst_dec_beams) if not b.done]
-                tgt_program = torch.stack(tgt_program).to(self.device)
+                tgt_program = [tf.Tensor(batch['target_program'])[i] for i, b in enumerate(inst_dec_beams) if not b.done]
+                tgt_program = tf.stack(tgt_program)
                 tgt_program = tgt_program.view(-1, self.len_program)
                 tgt_program = tgt_program.repeat(1, n_bm).view(-1, self.len_program)
                 return tgt_program
 
             def prepare_beam_dec_pos(len_dec_seq, n_active_inst, n_bm):
-                dec_partial_pos = torch.arange(1, len_dec_seq + 1, dtype=torch.long, device=self.device)
-                dec_partial_pos = dec_partial_pos.unsqueeze(0).repeat(n_active_inst * n_bm, 1)
+                dec_partial_pos = tf.linspace(1, len_dec_seq + 1, dtype=tf.int64)
+                dec_partial_pos = tf.expand_dims(dec_partial_pos, 0).repeat(n_active_inst * n_bm, 1)
+                
                 return dec_partial_pos
                   
             def predict_word(dec_seq, dec_pos, src_seq, enc_output, n_active_inst, n_bm, enc_batch_extend_vocab, extra_zeros, mask_src, encoder_db, mask_transformer_db, atten):
                 ## masking
-                mask_trg = dec_seq.data.eq(config.PAD_idx).unsqueeze(1)
-                mask_src = torch.cat([mask_src[0].unsqueeze(0)]*mask_trg.size(0),0)
+                mask_trg = tf.expand_dims(dec_seq.data.eq(config.PAD_idx), 1)
+                mask_src = tf.cat([tf.expand_dims(mask_src[0], 0)]*mask_trg.size(0),0)
 
                 dec_output, attn_dist = self.model.decoder(self.model.embedding(dec_seq), enc_output, (mask_src,mask_trg), atten)
 
@@ -255,6 +255,7 @@ class Translator(object):
 
             attention_parameters = self.model.attention_activation(logit_prob)
             
+            # tf.stop.gradient
             if(config.oracle): attention_parameters = self.model.attention_activation(torch.FloatTensor(src_seq['target_program'])*1000).cuda()
             self.attention_parameters = attention_parameters.unsqueeze(-1).unsqueeze(-1)
 

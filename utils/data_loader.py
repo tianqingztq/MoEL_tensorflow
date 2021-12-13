@@ -1,6 +1,12 @@
+import sys
+import os
+from numpy import int64
+curPath = os.path.abspath(os.path.dirname(__file__))
+rootPath = os.path.split(curPath)[0]
+sys.path.append(rootPath)
 
-import torch
-import torch.utils.data as data
+import tensorflow as tf
+#import torch.utils.data as data
 import random
 import math
 import os
@@ -12,28 +18,35 @@ import pprint
 pp = pprint.PrettyPrinter(indent=1)
 import re
 import ast
-#from utils.nlp import normalize
+## from utils.nlp import normalize
 import time
-from model.common_layer import write_config
+from model.common_layer_wz import write_config  # @wz
 from utils.data_reader import load_dataset
 
-torch.manual_seed(0)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+tf.random.set_seed(1)
 
-class Dataset(data.Dataset):
+class Dataset(tf.keras.utils.Sequence):
     """Custom data.Dataset compatible with data.DataLoader."""
-    def __init__(self, data, vocab):
+    def __init__(self, data, vocab, batch_size, shuffle=True):
         """Reads source and target sequences from txt files."""
         self.vocab = vocab
         self.data = data 
+        self.batch_size = batch_size
+        self.shuffle = shuffle
         self.emo_map = {
         'surprised': 0, 'excited': 1, 'annoyed': 2, 'proud': 3, 'angry': 4, 'sad': 5, 'grateful': 6, 'lonely': 7,
         'impressed': 8, 'afraid': 9, 'disgusted': 10, 'confident': 11, 'terrified': 12, 'hopeful': 13, 'anxious': 14, 'disappointed': 15,
         'joyful': 16, 'prepared': 17, 'guilty': 18, 'furious': 19, 'nostalgic': 20, 'jealous': 21, 'anticipating': 22, 'embarrassed': 23,
         'content': 24, 'devastated': 25, 'sentimental': 26, 'caring': 27, 'trusting': 28, 'ashamed': 29, 'apprehensive': 30, 'faithful': 31}
+        random.seed(0)
+        random.shuffle(data) 
+
+    def on_epoch_end(self):
+        if self.shuffle == True:
+            random.shuffle(self.data)
+
     def __len__(self):
-        return len(self.data["target"])
+        return len(self.data["target"]) // self.batch_size
 
     def __getitem__(self, index):
         """Returns one data pair (source and target)."""
@@ -53,7 +66,7 @@ class Dataset(data.Dataset):
         """Converts words to ids."""
         if(anw):
             sequence = [self.vocab.word2index[word] if word in self.vocab.word2index else config.UNK_idx for word in arr] + [config.EOS_idx]
-            return torch.LongTensor(sequence)
+            return tf.Variable(sequence, dtype=tf.int64)
         else:
             X_dial = [config.CLS_idx]
             X_mask = [config.CLS_idx]
@@ -63,7 +76,7 @@ class Dataset(data.Dataset):
                 X_mask += [spk for _ in range(len(sentence))] 
             assert len(X_dial) == len(X_mask)
 
-            return torch.LongTensor(X_dial), torch.LongTensor(X_mask)
+            return tf.Variable(X_dial, dtype=tf.int64), tf.Variable(X_mask, dtype=tf.int64)
 
     def preprocess_emo(self, emotion, emo_map):
         program = [0]*len(emo_map)
@@ -73,7 +86,7 @@ class Dataset(data.Dataset):
 def collate_fn(data):
     def merge(sequences):
         lengths = [len(seq) for seq in sequences]
-        padded_seqs = torch.ones(len(sequences), max(lengths)).long() ## padding index 1
+        padded_seqs = tf.ones([len(sequences), max(lengths)], dtype=int64) ## padding index 1
         for i, seq in enumerate(sequences):
             end = lengths[i]
             padded_seqs[i, :end] = seq[:end]
@@ -100,10 +113,10 @@ def collate_fn(data):
  
     d = {}
     d["input_batch"] = input_batch
-    d["input_lengths"] = torch.LongTensor(input_lengths)
+    d["input_lengths"] = tf.Variable(input_lengths, dtype=int64)
     d["mask_input"] = mask_input
     d["target_batch"] = target_batch
-    d["target_lengths"] = torch.LongTensor(target_lengths)
+    d["target_lengths"] = tf.Variable(target_lengths, dtype=int64)
     ##program
     d["target_program"] = item_info['emotion']
     d["program_label"] = item_info['emotion_label']

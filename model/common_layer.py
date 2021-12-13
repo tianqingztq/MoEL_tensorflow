@@ -1,21 +1,14 @@
-### MOST OF IT TAKEN FROM https://github.com/kolloldas/torchnlp
-## MINOR CHANGES
-# import matplotlib
-# matplotlib.use('Agg')
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import Variable
-import torch.nn.init as I
-import numpy as np
-import math
 import os
+import math
+import numpy as np
+import tensorflow as tf
+from tqdm import tqdm
 from utils import config
 from utils.metric import rouge, moses_multi_bleu, _prec_recall_f1_score, compute_prf, compute_exact_match
-# if(config.model == 'multi-trs'):
-#     from utils.beam_omt_multiplex import Translator
-# else:
-#     from utils.beam_omt import Translator
+from tensorflow.keras import layers
+import matplotlib.pyplot as plt
+
+
 if(config.model == 'trs'):
     from utils.beam_omt import Translator
 elif(config.model == 'seq2seq'):
@@ -24,18 +17,9 @@ elif(config.model == 'multi-trs'):
     from utils.beam_omt_multiplex import Translator
 elif(config.model == 'experts'):
     from utils.beam_omt_experts import Translator
-import pprint
-from tqdm import tqdm
-pp = pprint.PrettyPrinter(indent=1)
-import numpy as np
-# import matplotlib.pyplot as plt
 
-torch.manual_seed(0)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-np.random.seed(0)
 
-class EncoderLayer(nn.Module):
+class EncoderLayer(layers.Layer):
     """
     Represents one Encoder layer of the Transformer Encoder
     Refer Fig. 1 in https://arxiv.org/pdf/1706.03762.pdf
@@ -56,7 +40,6 @@ class EncoderLayer(nn.Module):
             attention_dropout: Dropout probability after attention (Should be non-zero only during training)
             relu_dropout: Dropout probability after relu in FFN (Should be non-zero only during training)
         """
-        
         super(EncoderLayer, self).__init__()
         
         self.multi_head_attention = MultiHeadAttention(hidden_size, total_key_depth, total_value_depth, 
@@ -65,36 +48,29 @@ class EncoderLayer(nn.Module):
         self.positionwise_feed_forward = PositionwiseFeedForward(hidden_size, filter_size, hidden_size,
                                                                  layer_config='cc', padding = 'both', 
                                                                  dropout=relu_dropout)
-        self.dropout = nn.Dropout(layer_dropout)
-        self.layer_norm_mha = LayerNorm(hidden_size)
-        self.layer_norm_ffn = LayerNorm(hidden_size)
-        # self.layer_norm_end = LayerNorm(hidden_size)
-        
-    def forward(self, inputs, mask=None):
+        self.dropout = layers.Dropout(layer_dropout)
+        self.layer_norm_mha = layers.LayerNormalization(epsilon=1e-6)
+        self.layer_norm_ffn = layers.LayerNormalization(epsilon=1e-6)
+
+    def forward(self, inputs, mask=None, training=True):
         x = inputs
         
         # Layer Normalization
         x_norm = self.layer_norm_mha(x)
-        
         # Multi-head attention
         y, _ = self.multi_head_attention(x_norm, x_norm, x_norm, mask)
-        
         # Dropout and residual
-        x = self.dropout(x + y)
-        
+        x = self.dropout(x + y, training=training)
         # Layer Normalization
         x_norm = self.layer_norm_ffn(x)
-        
         # Positionwise Feedforward
         y = self.positionwise_feed_forward(x_norm)
-        
         # Dropout and residual
-        y = self.dropout(x + y)
-        
+        y = self.dropout(x + y, training=training)
         # y = self.layer_norm_end(y)
         return y
-
-class DecoderLayer(nn.Module):
+    
+class DecoderLayer(layers.Layer):
     """
     Represents one Decoder layer of the Transformer Decoder
     Refer Fig. 1 in https://arxiv.org/pdf/1706.03762.pdf
@@ -114,10 +90,8 @@ class DecoderLayer(nn.Module):
             layer_dropout: Dropout for this layer
             attention_dropout: Dropout probability after attention (Should be non-zero only during training)
             relu_dropout: Dropout probability after relu in FFN (Should be non-zero only during training)
-        """
-        
+        """ 
         super(DecoderLayer, self).__init__()
-        
         self.multi_head_attention_dec = MultiHeadAttention(hidden_size, total_key_depth, total_value_depth, 
                                                        hidden_size, num_heads, bias_mask, attention_dropout)
 
@@ -127,14 +101,13 @@ class DecoderLayer(nn.Module):
         self.positionwise_feed_forward = PositionwiseFeedForward(hidden_size, filter_size, hidden_size,
                                                                  layer_config='cc', padding = 'left', 
                                                                  dropout=relu_dropout)
-        self.dropout = nn.Dropout(layer_dropout)
-        self.layer_norm_mha_dec = LayerNorm(hidden_size)
-        self.layer_norm_mha_enc = LayerNorm(hidden_size)
-        self.layer_norm_ffn = LayerNorm(hidden_size)
-        # self.layer_norm_end = LayerNorm(hidden_size)
-
-        
-    def forward(self, inputs):
+        self.dropout = layers.Dropout(layer_dropout)
+        self.layer_norm_mha_dec = layers.LayerNormalization(epsilon=1e-6)
+        self.layer_norm_mha_enc = layers.LayerNormalization(epsilon=1e-6)
+        self.layer_norm_ffn = layers.LayerNormalization(epsilon=1e-6)
+        # self.layer_norm_end = layers.LayerNormalization(epsilon=1e-6)
+    
+    def forward(self, inputs, training=True):
         """
         NOTE: Inputs is a tuple consisting of decoder inputs and encoder output
         """
@@ -144,37 +117,27 @@ class DecoderLayer(nn.Module):
         
         # Layer Normalization before decoder self attention
         x_norm = self.layer_norm_mha_dec(x)
-        
         # Masked Multi-head attention
         y, _ = self.multi_head_attention_dec(x_norm, x_norm, x_norm, dec_mask)
-        
         # Dropout and residual after self-attention
-        x = self.dropout(x + y)
-
+        x = self.dropout(x + y, training=training)
         # Layer Normalization before encoder-decoder attention
         x_norm = self.layer_norm_mha_enc(x)
-
         # Multi-head encoder-decoder attention
         y, attention_weight = self.multi_head_attention_enc_dec(x_norm, encoder_outputs, encoder_outputs, mask_src)
-
         # Dropout and residual after encoder-decoder attention
-        x = self.dropout(x + y)
-        
+        x = self.dropout(x + y, training=training)
         # Layer Normalization
         x_norm = self.layer_norm_ffn(x)
-        
         # Positionwise Feedforward
         y = self.positionwise_feed_forward(x_norm)
-        
         # Dropout and residual after positionwise feed forward layer
-        y = self.dropout(x + y)
-        
+        y = self.dropout(x + y, training=training)
         # y = self.layer_norm_end(y)
-        
-        # Return encoder outputs as well to work with nn.Sequential
+        # Return encoder outputs as well to work with tf.keras.models.Sequential
         return y, encoder_outputs, attention_weight, mask
 
-class MultiExpertMultiHeadAttention(nn.Module):
+class MultiExpertMultiHeadAttention(layers.Layer):
     def __init__(self, num_experts, input_depth, total_key_depth, total_value_depth, output_depth, 
                  num_heads, bias_mask=None, dropout=0.0):
         """
@@ -191,13 +154,6 @@ class MultiExpertMultiHeadAttention(nn.Module):
         super(MultiExpertMultiHeadAttention, self).__init__()
         # Checks borrowed from 
         # https://github.com/tensorflow/tensor2tensor/blob/master/tensor2tensor/layers/common_attention.py
-        # if total_key_depth % num_heads != 0:
-        #     raise ValueError("Key depth (%d) must be divisible by the number of "
-        #                      "attention heads (%d)." % (total_key_depth, num_heads))
-        # if total_value_depth % num_heads != 0:
-        #     raise ValueError("Value depth (%d) must be divisible by the number of "
-        #                      "attention heads (%d)." % (total_value_depth, num_heads))
-            
         if total_key_depth % num_heads != 0:
             print("Key depth (%d) must be divisible by the number of "
                              "attention heads (%d)." % (total_key_depth, num_heads))
@@ -212,12 +168,12 @@ class MultiExpertMultiHeadAttention(nn.Module):
         self.bias_mask = bias_mask
         
         # Key and query depth will be same
-        self.query_linear = nn.Linear(input_depth, total_key_depth*num_experts, bias=False)
-        self.key_linear = nn.Linear(input_depth, total_key_depth*num_experts, bias=False)
-        self.value_linear = nn.Linear(input_depth, total_value_depth*num_experts, bias=False)
-        self.output_linear = nn.Linear(total_value_depth, output_depth*num_experts, bias=False)
+        self.query_linear = layers.Dense(total_key_depth*num_experts, use_bias=False)
+        self.key_linear = layers.Dense(total_key_depth*num_experts, use_bias=False)
+        self.value_linear = layers.Dense(total_value_depth*num_experts, use_bias=False)
+        self.output_linear = layers.Dense(output_depth*num_experts, use_bias=False)
         
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = layers.Dropout(dropout)
     
     def _split_heads(self, x):
         """
@@ -225,12 +181,13 @@ class MultiExpertMultiHeadAttention(nn.Module):
         Input:
             x: a Tensor with shape [batch_size, seq_length, depth]
         Returns:
-            A Tensor with shape [batch_size, num_experts ,num_heads, seq_length, depth/num_heads]
+            A Tensor with shape [batch_size, num_experts ,num_heads, seq_length, depth/(num_heads*num_experts)]
         """
         if len(x.shape) != 3:
             raise ValueError("x must have rank 3")
         shape = x.shape
-        return x.view(shape[0], shape[1], self.num_experts, self.num_heads, shape[2]//(self.num_heads*self.num_experts)).permute(0, 2, 3, 1, 4)
+        return tf.transpose(tf.reshape(x, [shape[0], shape[1], self.num_experts, self.num_heads, 
+                               shape[2]//(self.num_heads*self.num_experts)]), perm=[0, 2, 3, 1, 4])
     
     def _merge_heads(self, x):
         """
@@ -238,57 +195,47 @@ class MultiExpertMultiHeadAttention(nn.Module):
         Input:
             x: a Tensor with shape [batch_size, num_experts ,num_heads, seq_length, depth/num_heads]
         Returns:
-            A Tensor with shape [batch_size, seq_length, depth]
+            A Tensor with shape [batch_size, seq_length, num_experts, depth/num_experts]
         """
         if len(x.shape) != 5:
             raise ValueError("x must have rank 5")
         shape = x.shape
-        return x.permute(0, 3, 1, 2, 4).contiguous().view(shape[0], shape[3], self.num_experts, shape[4]*self.num_heads)
-        
+        return tf.reshape(tf.transpose(x, perm=[0, 3, 1, 2, 4]), [shape[0], shape[3], self.num_experts, shape[4]*self.num_heads])
+    
     def forward(self, queries, keys, values, mask):
         
         # Do a linear for each component
         queries = self.query_linear(queries)
         keys = self.key_linear(keys)
         values = self.value_linear(values)
-        
         # Split into multiple heads
         queries = self._split_heads(queries)
         keys = self._split_heads(keys)
         values = self._split_heads(values)
-        
         # Scale queries
         queries *= self.query_scale
-        
         # Combine queries and keys
-        logits = torch.matmul(queries, keys.permute(0, 1, 2, 4, 3))
+        logits = tf.matmul(queries, keys, transpose_b=True)
         
         if mask is not None:
-            mask = mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, 1, T_values]
-            logits = logits.masked_fill(mask, -1e18)
+            logits += (mask * -1e18)
 
         ## attention weights 
         # attetion_weights = logits.sum(dim=1)/self.num_heads
-
         # Convert to probabilites
-        weights = nn.functional.softmax(logits, dim=-1)
-
+        weights = tf.nn.softmax(logits, axis=-1)
         # Dropout
         weights = self.dropout(weights)
-        
         # Combine with values to get context
-        contexts = torch.matmul(weights, values)
-        
+        contexts = tf.matmul(weights, values)
         # Merge heads
         contexts = self._merge_heads(contexts)
         #contexts = torch.tanh(contexts)
-        
         # Linear to get output
         outputs = self.output_linear(contexts)
-        
         return outputs
 
-class MultiHeadAttention(nn.Module):
+class MultiHeadAttention(layers.Layer):
     """
     Multi-head attention as per https://arxiv.org/pdf/1706.03762.pdf
     Refer Figure 2
@@ -329,12 +276,11 @@ class MultiHeadAttention(nn.Module):
         self.bias_mask = bias_mask
         
         # Key and query depth will be same
-        self.query_linear = nn.Linear(input_depth, total_key_depth, bias=False)
-        self.key_linear = nn.Linear(input_depth, total_key_depth, bias=False)
-        self.value_linear = nn.Linear(input_depth, total_value_depth, bias=False)
-        self.output_linear = nn.Linear(total_value_depth, output_depth, bias=False)
-        
-        self.dropout = nn.Dropout(dropout)
+        self.query_linear = layers.Dense(total_key_depth, use_bias=False)
+        self.key_linear = layers.Dense(total_key_depth, use_bias=False)
+        self.value_linear = layers.Dense(total_value_depth, use_bias=False)
+        self.output_linear = layers.Dense(output_depth, use_bias=False)
+        self.dropout = layers.Dropout(dropout)
     
     def _split_heads(self, x):
         """
@@ -347,7 +293,7 @@ class MultiHeadAttention(nn.Module):
         if len(x.shape) != 3:
             raise ValueError("x must have rank 3")
         shape = x.shape
-        return x.view(shape[0], shape[1], self.num_heads, shape[2]//self.num_heads).permute(0, 2, 1, 3)
+        return tf.transpose(tf.reshape(x, [shape[0], shape[1], self.num_heads, shape[2]//self.num_heads]), perm=[0, 2, 1, 3])
     
     def _merge_heads(self, x):
         """
@@ -360,57 +306,47 @@ class MultiHeadAttention(nn.Module):
         if len(x.shape) != 4:
             raise ValueError("x must have rank 4")
         shape = x.shape
-        return x.permute(0, 2, 1, 3).contiguous().view(shape[0], shape[2], shape[3]*self.num_heads)
-        
+        return tf.reshape(tf.transpose(x, perm=[0, 2, 1, 3]), [shape[0], shape[2], shape[3]*self.num_heads])
+    
     def forward(self, queries, keys, values, mask):
         
         # Do a linear for each component
         queries = self.query_linear(queries)
         keys = self.key_linear(keys)
         values = self.value_linear(values)
-        
         # Split into multiple heads
         queries = self._split_heads(queries)
         keys = self._split_heads(keys)
         values = self._split_heads(values)
-        
         # Scale queries
         queries *= self.query_scale
-        
         # Combine queries and keys
-        logits = torch.matmul(queries, keys.permute(0, 1, 3, 2))
+        logits = tf.matmul(queries, keys, transpose_b=True)
         
         if mask is not None:
-            mask = mask.unsqueeze(1)  # [B, 1, 1, T_values]
-            logits = logits.masked_fill(mask, -1e18)
+            logits += (mask * -1e18)
 
         ## attention weights 
-        attetion_weights = logits.sum(dim=1)/self.num_heads
-
+        attetion_weights = tf.reduce_sum(logits, axis=1)/self.num_heads
         # Convert to probabilites
-        weights = nn.functional.softmax(logits, dim=-1)
-
+        weights = tf.nn.softmax(logits, axis=-1)
         # Dropout
         weights = self.dropout(weights)
-        
         # Combine with values to get context
-        contexts = torch.matmul(weights, values)
-        
+        contexts = tf.matmul(weights, values)
         # Merge heads
         contexts = self._merge_heads(contexts)
         #contexts = torch.tanh(contexts)
-        
         # Linear to get output
-        outputs = self.output_linear(contexts)
-        
+        outputs = self.output_linear(contexts)       
         return outputs, attetion_weights
 
-class Conv(nn.Module):
+class Conv(layers.Layer):
     """
     Convenience class that does padding and convolution for inputs in the format
     [batch_size, sequence length, hidden size]
     """
-    def __init__(self, input_size, output_size, kernel_size, pad_type):
+    def __init__(self, output_size, kernel_size, pad_type):
         """
         Parameters:
             input_size: Input feature size
@@ -420,18 +356,17 @@ class Conv(nn.Module):
                       both -> pad on both sides
         """
         super(Conv, self).__init__()
-        padding = (kernel_size - 1, 0) if pad_type == 'left' else (kernel_size//2, (kernel_size - 1)//2)
-        self.pad = nn.ConstantPad1d(padding, 0)
-        self.conv = nn.Conv1d(input_size, output_size, kernel_size=kernel_size, padding=0)
+        padding = [kernel_size - 1, 0] if pad_type == 'left' else [kernel_size//2, (kernel_size - 1)//2]
+        self.padding = [[0, 0], [0, 0], padding]
+        self.output_size = output_size
+        self.kernel_size = kernel_size
 
-    def forward(self, inputs):
-        inputs = self.pad(inputs.permute(0, 2, 1))
-        outputs = self.conv(inputs).permute(0, 2, 1)
-
+    def forward(self, inputs, training=True):
+        inputs = tf.pad(tf.transpose(inputs, perm=[0, 2, 1]), self.padding, "CONSTANT") 
+        outputs = layers.Conv1D(self.output_size, self.kernel_size, padding='valid')(tf.transpose(inputs, [0, 2, 1]), training=training)
         return outputs
 
-
-class PositionwiseFeedForward(nn.Module):
+class PositionwiseFeedForward(layers.Layer):
     """
     Does a Linear + RELU + Linear on each of the timesteps
     """
@@ -449,64 +384,44 @@ class PositionwiseFeedForward(nn.Module):
         """
         super(PositionwiseFeedForward, self).__init__()
         
-        layers = []
-        sizes = ([(input_depth, filter_size)] + 
-                 [(filter_size, filter_size)]*(len(layer_config)-2) + 
-                 [(filter_size, output_depth)])
-
-        for lc, s in zip(list(layer_config), sizes):
-            if lc == 'l':
-                layers.append(nn.Linear(*s))
-            elif lc == 'c':
-                layers.append(Conv(*s, kernel_size=3, pad_type=padding))
-            else:
-                raise ValueError("Unknown layer type {}".format(lc))
-
-        self.layers = nn.ModuleList(layers)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(dropout)
+        self.layer_config = layer_config
+        self.linear_layer1 = layers.Dense(filter_size)
+        self.linear_layer2 = layers.Dense(output_depth)
+        self.conv_layer1 = Conv(filter_size, kernel_size=3, pad_type=padding)
+        self.conv_layer2 = Conv(output_depth, kernel_size=3, pad_type=padding)
+        self.relu_layer = layers.ReLU()
+        self.dropout_layer = layers.Dropout(dropout)
         
     def forward(self, inputs):
         x = inputs
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if i < len(self.layers):
-                x = self.relu(x)
-                x = self.dropout(x)
-
+        for i, cur_layer in enumerate(self.layer_config):
+            if i < len(self.layer_config)-1:
+                if cur_layer == 'l':
+                    x = self.linear_layer1(x)
+                elif cur_layer == 'c':
+                    x = self.conv_layer1(x)
+                else:
+                    raise ValueError("Unknown layer type {}".format(cur_layer))
+            else:
+                if cur_layer == 'l':
+                    x = self.linear_layer2(x)
+                elif cur_layer == 'c':
+                    x = self.conv_layer2(x)
+                else:
+                    raise ValueError("Unknown layer type {}".format(cur_layer))
+            x = self.relu_layer(x)
+            x = self.dropout_layer(x)
         return x
-
-
-class LayerNorm(nn.Module):
-    # Borrowed from jekbradbury
-    # https://github.com/pytorch/pytorch/issues/1959
-    def __init__(self, features, eps=1e-6):
-        super(LayerNorm, self).__init__()
-        self.gamma = nn.Parameter(torch.ones(features))
-        self.beta = nn.Parameter(torch.zeros(features))
-        self.eps = eps
-
-    def forward(self, x):
-        mean = x.mean(-1, keepdim=True)
-        std = x.std(-1, keepdim=True)
-        return self.gamma * (x - mean) / (std + self.eps) + self.beta
-
 
 def _gen_bias_mask(max_length):
     """
     Generates bias values (-Inf) to mask future timesteps during attention
     """
     np_mask = np.triu(np.full([max_length, max_length], -np.inf), 1)
-    torch_mask = torch.from_numpy(np_mask).type(torch.FloatTensor)
-    
-    return torch_mask.unsqueeze(0).unsqueeze(1)
+    tf_mask = tf.cast(np_mask, dtype=tf.float32)
+    return tf.expand_dims(tf.expand_dims(tf_mask, 0), 1)
 
 def _gen_timing_signal(length, channels, min_timescale=1.0, max_timescale=1.0e4):
-    """
-    Generates a [1, length, channels] timing signal consisting of sinusoids
-    Adapted from:
-    https://github.com/tensorflow/tensor2tensor/blob/master/tensor2tensor/layers/common_attention.py
-    """
     position = np.arange(length)
     num_timescales = channels // 2
     log_timescale_increment = ( math.log(float(max_timescale) / float(min_timescale)) / (float(num_timescales) - 1))
@@ -516,9 +431,7 @@ def _gen_timing_signal(length, channels, min_timescale=1.0, max_timescale=1.0e4)
     signal = np.concatenate([np.sin(scaled_time), np.cos(scaled_time)], axis=1)
     signal = np.pad(signal, [[0, 0], [0, channels % 2]], 'constant', constant_values=[0.0, 0.0])
     signal =  signal.reshape([1, length, channels])
-
-    return torch.from_numpy(signal).type(torch.FloatTensor)
-
+    return tf.cast(signal, dtype=tf.float32)
 
 def _get_attn_subsequent_mask(size):
     """
@@ -531,14 +444,13 @@ def _get_attn_subsequent_mask(size):
     """
     attn_shape = (1, size, size)
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
-    subsequent_mask = torch.from_numpy(subsequent_mask)
+    subsequent_mask = tf.cast(subsequent_mask, dtype=tf.uint8)
     if(config.USE_CUDA):
         return subsequent_mask.cuda()
     else:
         return subsequent_mask
 
-
-class OutputLayer(nn.Module):
+class OutputLayer(layers.Layer):
     """
     Abstract base class for output layer. 
     Handles projection to output labels
@@ -546,11 +458,10 @@ class OutputLayer(nn.Module):
     def __init__(self, hidden_size, output_size):
         super(OutputLayer, self).__init__()
         self.output_size = output_size
-        self.output_projection = nn.Linear(hidden_size, output_size)
+        self.output_projection = layers.Dense(output_size)
 
     def loss(self, hidden, labels):
         raise NotImplementedError('Must implement {}.loss'.format(self.__class__.__name__))
-
 
 class SoftmaxOutputLayer(OutputLayer):
     """
@@ -558,15 +469,14 @@ class SoftmaxOutputLayer(OutputLayer):
     """
     def forward(self, hidden):
         logits = self.output_projection(hidden)
-        probs = F.softmax(logits, -1)
-        _, predictions = torch.max(probs, dim=-1)
-
+        probs = tf.nn.softmax(logits, axis=-1)
+        predictions = tf.math.argmax(probs, axis=-1)
         return predictions
 
     def loss(self, hidden, labels):
         logits = self.output_projection(hidden)
-        log_probs = F.log_softmax(logits, -1)
-        return F.nll_loss(log_probs.view(-1, self.output_size), labels.view(-1))
+        log_probs = tf.nn.log_softmax(logits, axis=-1)
+        return -tf.math.reduce_sum(tf.one_hot(labels, depth=self.output_size)*tf.nn.log_softmax(log_probs, -1))/len(labels)
 
 def position_encoding(sentence_size, embedding_dim):
     encoding = np.ones((embedding_dim, sentence_size), dtype=np.float32)
@@ -602,46 +512,45 @@ def gen_embeddings(vocab):
         print('Pre-trained: %d (%.2f%%)' % (pre_trained, pre_trained * 100.0 / vocab.n_words))
     return embeddings
 
-class Embeddings(nn.Module):
-    def __init__(self,vocab, d_model, padding_idx=None):
+class TF_Embedding(layers.Layer):
+    def __init__(self, vocab, d_model, padding_idx=0, pretrain=True, **kwargs):
+        super(TF_Embedding, self).__init__(**kwargs)
+        self.input_dim = vocab.n_words
+        self.output_dim = d_model
+        self.padding_idx = padding_idx
+        if pretrain:
+            pre_embedding = gen_embeddings(vocab)
+            self.embeddings =  layers.Embedding(self.input_dim, self.output_dim, weights=[pre_embedding])
+        else:
+            self.embeddings = self.add_weight(
+                shape=(self.input_dim, self.output_dim),
+                initializer='random_normal',
+                dtype='float32')
+
+    def call(self, inputs): 
+        def compute_mask():
+            return tf.not_equal(inputs, self.padding_idx)
+        
+        out = tf.nn.embedding_lookup(self.embeddings, inputs)
+        masking = compute_mask() # [B, T], bool
+        masking = tf.cast(tf.tile(masking[:,:, tf.newaxis], [1,1,self.output_dim]), 
+                          dtype=tf.float32) # [B, T, D]
+        return tf.multiply(out, masking)
+
+class Embeddings(layers.Layer):
+    def __init__(self, vocab, d_model, padding_idx=None, pretrain=True):
         super(Embeddings, self).__init__()
-        self.lut = nn.Embedding(vocab, d_model, padding_idx=padding_idx)
+        self.lut = TF_Embedding(vocab, d_model, padding_idx=padding_idx, pretrain=pretrain)
         self.d_model = d_model
 
     def forward(self, x):
         return self.lut(x) * math.sqrt(self.d_model)
 
 def share_embedding(vocab, pretrain=True):
-    embedding = Embeddings(vocab.n_words, config.emb_dim, padding_idx=config.PAD_idx)
-    if(pretrain):
-        pre_embedding = gen_embeddings(vocab)
-        embedding.lut.weight.data.copy_(torch.FloatTensor(pre_embedding))
-        embedding.lut.weight.data.requires_grad = True
+    embedding = Embeddings(vocab, config.emb_dim, padding_idx=config.PAD_idx, pretrain=pretrain)
+    #embedding.lut.weight.data.copy_(torch.FloatTensor(pre_embedding))
+    #embedding.lut.weight.data.requires_grad = True
     return embedding
-
-class LabelSmoothing(nn.Module):
-    "Implement label smoothing."
-    def __init__(self, size, padding_idx, smoothing=0.0):
-        super(LabelSmoothing, self).__init__()
-        self.criterion = nn.KLDivLoss(reduction='sum')
-        self.padding_idx = padding_idx
-        self.confidence = 1.0 - smoothing
-        self.smoothing = smoothing
-        self.size = size
-        self.true_dist = None
-        
-    def forward(self, x, target):
-        assert x.size(1) == self.size
-        true_dist = x.data.clone()
-        true_dist.fill_(self.smoothing / (self.size - 2))
-        true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
-        true_dist[:, self.padding_idx] = 0
-        mask = torch.nonzero(target.data == self.padding_idx)
-        if mask.size()[0] > 0:
-            true_dist.index_fill_(0, mask.squeeze(), 0.0)
-        self.true_dist = true_dist
-        return self.criterion(x, true_dist)
-
 
 class NoamOpt:
     "Optim wrapper that implements rate."
@@ -677,19 +586,18 @@ def get_attn_key_pad_mask(seq_k, seq_q):
     ''' For masking out the padding part of key sequence. '''
 
     # Expand to fit the shape of key query attention matrix.
-    len_q = seq_q.size(1)
-    padding_mask = seq_k.eq(config.PAD_idx)
-    padding_mask = padding_mask.unsqueeze(1).expand(-1, len_q, -1)  # b x lq x lk
-
+    len_q = seq_q.shape[1]
+    padding_mask = tf.math.equal(seq_k, config.PAD_idx)
+    padding_mask = tf.broadcast_to(tf.expand_dims(padding_mask, 1), [-1, len_q, -1]) # b x lq x lk
     return padding_mask
 
 def get_input_from_batch(batch):
     enc_batch = batch["input_batch"]
     enc_lens = batch["input_lengths"]
-    batch_size, max_enc_len = enc_batch.size()
+    batch_size, max_enc_len = enc_batch.shape
     assert len(enc_lens) == batch_size
 
-    enc_padding_mask = sequence_mask(enc_lens, max_len=max_enc_len).float()
+    enc_padding_mask = tf.cast(sequence_mask(enc_lens, max_len=max_enc_len), dtype=tf.float32)
 
     extra_zeros = None
     enc_batch_extend_vocab = None
@@ -698,18 +606,18 @@ def get_input_from_batch(batch):
         enc_batch_extend_vocab = batch["input_ext_vocab_batch"]
         # max_art_oovs is the max over all the article oov list in the batch
         if batch["max_art_oovs"] > 0:
-            extra_zeros = torch.zeros((batch_size, batch["max_art_oovs"]))
+            extra_zeros = tf.zeros((batch_size, batch["max_art_oovs"]))
 
-    c_t_1 = torch.zeros((batch_size, 2 * config.hidden_dim))
+    c_t_1 = tf.zeros((batch_size, 2 * config.hidden_dim))
 
     coverage = None
     if config.is_coverage:
-        coverage = torch.zeros(enc_batch.size())
+        coverage = tf.zeros(enc_batch.shape)
 
     if config.USE_CUDA:
         enc_padding_mask = enc_padding_mask.cuda()
         if enc_batch_extend_vocab is not None:
-                enc_batch_extend_vocab = enc_batch_extend_vocab.cuda()
+            enc_batch_extend_vocab = enc_batch_extend_vocab.cuda()
         if extra_zeros is not None:
             extra_zeros = extra_zeros.cuda()
         c_t_1 = c_t_1.cuda()
@@ -720,36 +628,29 @@ def get_input_from_batch(batch):
     return enc_batch, enc_padding_mask, enc_lens, enc_batch_extend_vocab, extra_zeros, c_t_1, coverage
 
 def get_output_from_batch(batch):
-
     dec_batch = batch["target_batch"]
-
     if(config.pointer_gen):
         target_batch = batch["target_ext_vocab_batch"]
     else:
-        target_batch = dec_batch
-        
+        target_batch = dec_batch       
     dec_lens_var = batch["target_lengths"]
     max_dec_len = max(dec_lens_var)
-
-    assert max_dec_len == target_batch.size(1)
-
-    dec_padding_mask = sequence_mask(dec_lens_var, max_len=max_dec_len).float()
+    assert max_dec_len == target_batch.shape[1]
+    dec_padding_mask = tf.cast(sequence_mask(dec_lens_var, max_len=max_dec_len), dtype=tf.float32)
 
     return dec_batch, dec_padding_mask, max_dec_len, dec_lens_var, target_batch
 
 def sequence_mask(sequence_length, max_len=None):
     if max_len is None:
-        max_len = sequence_length.data.max()
-    batch_size = sequence_length.size(0)
-    seq_range = torch.arange(0, max_len).long()
-    seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)
+        max_len = tf.math.reduce_max(sequence_length)
+    batch_size = sequence_length.shape[0]
+    seq_range = tf.range(0, max_len, dtype=tf.int32)
+    seq_range_expand = tf.broadcast_to(tf.expand_dims(seq_range, 0), [batch_size, max_len])
     seq_range_expand = seq_range_expand
     if sequence_length.is_cuda:
         seq_range_expand = seq_range_expand.cuda()
-    seq_length_expand = (sequence_length.unsqueeze(1)
-                        .expand_as(seq_range_expand))
+    seq_length_expand = tf.broadcast_to(tf.expand_dims(sequence_length, 1), seq_range_expand.shape)
     return seq_range_expand < seq_length_expand
-
 
 def write_config():
     if(not config.test):
@@ -764,7 +665,6 @@ def write_config():
                 else:
                     the_file.write("--{} {} ".format(k,v))
 
-
 def print_custum(emotion,dial,ref,hyp_g,hyp_b):
     print("emotion:{}".format(emotion))
     print("Context:{}".format(dial))
@@ -774,8 +674,6 @@ def print_custum(emotion,dial,ref,hyp_g,hyp_b):
     print("Ref:{}".format(ref))
     print("----------------------------------------------------------------------")
     print("----------------------------------------------------------------------")
-
-
 
 def plot_ptr_stats(model):
     stat_dict = model.generator.stats
@@ -798,7 +696,6 @@ def plot_ptr_stats(model):
     # Save the figure and show
     plt.tight_layout()
     plt.savefig(config.save_path+'bar_plot_with_error_bars.png')
-
 
 def evaluate(model, data,  ty='valid', max_dec_step=30):
     model.__id__logger = 0
@@ -852,7 +749,7 @@ def evaluate(model, data,  ty='valid', max_dec_step=30):
     return loss, math.exp(loss), bce, acc, bleu_score_g, bleu_score_b
 
 def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return sum(np.prod(p.get_shape()) for p in model.trainable_weights)
 
 def make_infinite(dataloader):
     while True:
@@ -869,19 +766,32 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=0, filter_value=-float('Inf')):
     top_k = min(top_k, logits.size(-1))  # Safety check
     if top_k > 0:
         # Remove all tokens with a probability less than the last token of the top-k
-        indices_to_remove = logits < torch.topk(logits, top_k)[0][:, -1, None]
+        indices_to_remove = logits < tf.math.top_k(logits, top_k)[0][:, -1, None]
         logits[indices_to_remove] = filter_value
 
     if top_p > 0.0:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+        sorted_logits = tf.sort(logits, direction='DESCENDING')
+        sorted_indices = tf.argsort(logits, direction='DESCENDING')
+        cumulative_probs = tf.math.cumsum(tf.nn.softmax(sorted_logits, axis=-1), axis=-1)
 
         # Remove tokens with cumulative probability above the threshold
         sorted_indices_to_remove = cumulative_probs > top_p
         # Shift the indices to the right to keep also the first token above the threshold
-        sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+        sorted_indices_to_remove[:, 1:] = tf.identity(sorted_indices_to_remove[:, :-1])
         sorted_indices_to_remove[:, 0] = 0
 
         indices_to_remove = sorted_indices[sorted_indices_to_remove]
         logits[indices_to_remove] = filter_value
     return logits
+
+
+
+
+
+
+
+
+
+
+
+
