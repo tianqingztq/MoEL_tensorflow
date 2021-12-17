@@ -49,12 +49,14 @@ class Encoder(layers.Layer):
             self.remainders = None
             self.n_updates = None
     
-    def forward(self, inputs, mask, training):
+    def call(self, inputs, mask, training=True): #ADHOC = TRUE
         #Add input dropout
+        
+        inputs = tf.cast(inputs, dtype = tf.float32) #inputs dim (32, 38)
         x = self.input_dropout(inputs)
         
         # Project to hidden size
-        x = self.embedding_proj(x)
+        x = self.embedding_proj(x) #x dim [32, 100]
         
         if(self.universal):
             if(config.act):
@@ -68,6 +70,15 @@ class Encoder(layers.Layer):
                 y = self.layer_norm(x)
         else:
             # Add timing signal
+#             MASK  Tensor("transformer_experts/Less_2:0", shape=(32, 38), dtype=bool)
+#             x (32, 100)
+#             inputs (32, 38)
+#             TIMING SIGNAL (1, 1000, 100)
+#             TIMING SIGNAL2 (1, 38, 100)
+            print('x', x.shape)
+            print('inputs', inputs.shape)
+            print('TIMING SIGNAL', self.timing_signal.shape)
+            print('TIMING SIGNAL2', self.timing_signal[:, :inputs.shape[1], :].shape)
             x += tf.cast(self.timing_signal[:, :inputs.shape[1], :], inputs.dtype)   
             for i in range(self.num_layers):
                 x = self.enc[i](x, mask, training=training)
@@ -108,7 +119,7 @@ class Decoder(layers.Layer):
         self.input_dropout = layers.Dropout(input_dropout)
 
 
-    def forward(self, inputs, encoder_output, mask, training):
+    def forward(self, inputs, encoder_output, mask, training=True):#ADHOC = TRUE
         mask_src, mask_trg = mask
         dec_mask = tf.math.greater(mask_trg + self.mask[:, :mask_trg.shape[-1], :mask_trg.shape[-1]], 0)
         #Add input dropout
@@ -162,7 +173,7 @@ class MulDecoder(layers.Layer):
         self.layer_norm = layers.LayerNormalization(epsilon=1e-6)
         self.input_dropout = layers.Dropout(input_dropout)
     
-    def forward(self, inputs, encoder_output, mask, attention_epxert, training):
+    def forward(self, inputs, encoder_output, mask, attention_epxert, training=True):#ADHOC = TRUE
         mask_src, mask_trg = mask
         dec_mask = tf.math.greater(mask_trg + self.mask[:, :mask_trg.shape[-1], :mask_trg.shape[-1]], 0)
         #Add input dropout
@@ -235,7 +246,7 @@ class Transformer_experts(layers.Layer):
         self.vocab = vocab
         self.vocab_size = vocab.n_words
 
-        self.embedding = share_embedding(self.vocab,config.pretrain_emb)
+        self.embedding = share_embedding(self.vocab, config.pretrain_emb)
         self.encoder = Encoder(config.emb_dim, config.hidden_dim, num_layers=config.hop, num_heads=config.heads, 
                                 total_key_depth=config.depth, total_value_depth=config.depth,
                                 filter_size=config.filter,universal=config.universal)
@@ -276,16 +287,17 @@ class Transformer_experts(layers.Layer):
             #os.makedirs(self.model_dir)
         #self.best_path = ""
     
-    def call(self, batch, training):
+    def call(self, batch, training=True): #ADHC training=True
         enc_batch, _, _, enc_batch_extend_vocab, extra_zeros, _, _ = get_input_from_batch(batch)
         dec_batch, _, _, _, _ = get_output_from_batch(batch)
         ## Encode
         mask_src = tf.expand_dims(tf.math.equal(enc_batch, config.PAD_idx), axis = 1)
         if config.dataset=="empathetic":
-            emb_mask = self.embedding(batch["mask_input"])
+            emb_mask = self.embedding(batch[2]) #"mask_input"
             encoder_outputs = self.encoder(self.embedding(enc_batch)+emb_mask, mask_src, training=training)
         else:
             encoder_outputs = self.encoder(self.embedding(enc_batch), mask_src, training=training)
+
         ## Attention over decoder
         q_h = tf.math.reduce_mean(encoder_outputs, axis=1) if config.mean_query else encoder_outputs[:,0]
         #q_h = encoder_outputs[:,0]
@@ -300,7 +312,7 @@ class Transformer_experts(layers.Layer):
         else:
             attention_parameters = self.attention_activation(logit_prob)
         if(config.oracle):
-            attention_parameters = self.attention_activation(tf.cast(batch['target_program'], dtype=tf.float32)*1000)
+            attention_parameters = self.attention_activation(tf.cast(batch[5], dtype=tf.float32)*1000) #'target_program'
         attention_parameters = tf.expand_dims(tf.expand_dims(attention_parameters, axis=-1), axis=-1) # (batch_size, expert_num, 1, 1)
         # Decode 
         sos_token = tf.expand_dims(tf.cast([config.SOS_idx] * enc_batch.shape[0], dtype=tf.int64), axis=1)
@@ -315,7 +327,7 @@ class Transformer_experts(layers.Layer):
     def decoder_greedy(self, batch, max_dec_step=30, training=False):
         enc_batch, _, _, enc_batch_extend_vocab, extra_zeros, _, _ = get_input_from_batch(batch)
         mask_src = tf.expand_dims(tf.math.equal(enc_batch, config.PAD_idx), axis = 1)
-        emb_mask = self.embedding(batch["mask_input"])
+        emb_mask = self.embedding(batch[2]) #"mask_input"
         encoder_outputs = self.encoder(self.embedding(enc_batch)+emb_mask, mask_src, training=training)
         ## Attention over decoder
         q_h = tf.math.reduce_mean(encoder_outputs, axis=1) if config.mean_query else encoder_outputs[:,0]
@@ -332,7 +344,7 @@ class Transformer_experts(layers.Layer):
         attention_parameters = self.attention_activation(logit_prob)
         
         if(config.oracle):
-            attention_parameters = self.attention_activation(tf.cast(batch['target_program'], dtype=tf.float32)*1000)
+            attention_parameters = self.attention_activation(tf.cast(batch[5], dtype=tf.float32)*1000) #'target_program'
         attention_parameters = tf.expand_dims(tf.expand_dims(attention_parameters, axis=-1), axis=-1) # (batch_size, expert_num, 1, 1)
 
         ys = tf.cast(tf.fill([1, 1], config.SOS_idx), dtype=tf.int64)
@@ -364,7 +376,7 @@ class Transformer_experts(layers.Layer):
     def decoder_topk(self, batch, max_dec_step=30, training=False):
         enc_batch, _, _, enc_batch_extend_vocab, extra_zeros, _, _ = get_input_from_batch(batch)
         mask_src = tf.expand_dims(tf.math.equal(enc_batch, config.PAD_idx), axis = 1)
-        emb_mask = self.embedding(batch["mask_input"])
+        emb_mask = self.embedding(batch[2]) #"mask_input"
         encoder_outputs = self.encoder(self.embedding(enc_batch)+emb_mask, mask_src, training=training)
         ## Attention over decoder
         q_h = tf.math.reduce_mean(encoder_outputs, axis=1) if config.mean_query else encoder_outputs[:,0]
@@ -381,7 +393,7 @@ class Transformer_experts(layers.Layer):
         attention_parameters = self.attention_activation(logit_prob)
         
         if(config.oracle):
-            attention_parameters = self.attention_activation(tf.cast(batch['target_program'], dtype=tf.float32)*1000)
+            attention_parameters = self.attention_activation(tf.cast(batch[5], dtype=tf.float32)*1000) #'target_program'
         attention_parameters = tf.expand_dims(tf.expand_dims(attention_parameters, axis=-1), axis=-1) # (batch_size, expert_num, 1, 1)
 
         ys = tf.cast(tf.fill([1, 1], config.SOS_idx), dtype=tf.int64)
@@ -433,7 +445,7 @@ class ACT_basic(layers.Layer):
         step = 0
         # for l in range(self.num_layers):
         while( ((halting_probability<self.threshold) & (n_updates < max_hop)).byte().any()):
-            # Add timing signal
+            # Add Timing Signal
             state = state + tf.cast(time_enc[:, :inputs.shape[1], :], inputs.dtype)
             state = state + tf.cast(tf.tile(tf.expand_dims(pos_enc[:, step, :], 1), [1,inputs.shape[1],1]), inputs.dtype)
 

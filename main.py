@@ -1,4 +1,4 @@
-from utils.data_loader import prepare_data_seq
+from utils.data_loader_new import prepare_data_seq
 from utils import config
 from model.transformer import Transformer
 from model.transformer_mulexpert import Transformer_experts

@@ -1,7 +1,10 @@
 import sys
 import os
 curPath = os.path.abspath(os.path.dirname(__file__))
+print('current path: ', curPath)
 rootPath = os.path.split(curPath)[0]
+print('root path: ', curPath)
+
 sys.path.append(rootPath)
 
 import os
@@ -124,6 +127,7 @@ def read_langs(vocab):
     assert len(data_test['context']) == len(data_test['target']) == len(data_test['emotion']) == len(data_test['situation'])
     return data_train, data_dev, data_test, vocab
 
+#load_dataset returns 3 dictionaries data_tra, data_val, data_tst and vocab <__main__.Lang at 0x7fdeaf8be0d0>
 
 def load_dataset():
     if(os.path.exists('empathetic-dialogue/dataset_preproc.p')):
@@ -136,10 +140,10 @@ def load_dataset():
         with open('empathetic-dialogue/dataset_preproc.p', "wb") as f:
             pickle.dump([data_tra, data_val, data_tst, vocab], f)
             print("Saved PICKLE")
-    for i in range(3):
-        print('[situation]:', ' '.join(data_tra['situation'][i]))
-        print('[emotion]:', data_tra['emotion'][i])
-        print('[context]:', [' '.join(u) for u in data_tra['context'][i]])
-        print('[target]:', ' '.join(data_tra['target'][i]))
-        print(" ")
+#     for i in range(3):
+#         print('[situation]:', ' '.join(data_tra['situation'][i]))
+#         print('[emotion]:', data_tra['emotion'][i])
+#         print('[context]:', [' '.join(u) for u in data_tra['context'][i]])
+#         print('[target]:', ' '.join(data_tra['target'][i]))
+#         print(" ")
     return data_tra, data_val, data_tst, vocab

@@ -44,7 +44,7 @@ parser.add_argument("--is_coverage", action="store_true")
 parser.add_argument("--use_oov_emb", action="store_true")
 parser.add_argument("--pretrain_emb", action="store_true")
 parser.add_argument("--test", action="store_true")
-parser.add_argument("--model", type=str, default="seq2seq")
+parser.add_argument("--model", type=str, default="experts") # seq2seq
 parser.add_argument("--weight_sharing", action="store_true")
 parser.add_argument("--label_smoothing", action="store_true")
 parser.add_argument("--noam", action="store_true")

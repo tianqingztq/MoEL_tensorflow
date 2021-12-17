@@ -7,7 +7,7 @@ import tensorflow as tf
 
 import numpy as np
 import math
-from model.common_layer import EncoderLayer, DecoderLayer, MultiHeadAttention, Conv, PositionwiseFeedForward, LayerNorm , _gen_bias_mask ,_gen_timing_signal, share_embedding, LabelSmoothing, NoamOpt, _get_attn_subsequent_mask,  get_input_from_batch, get_output_from_batch, top_k_top_p_filtering
+from model.common_layer import EncoderLayer, DecoderLayer, MultiHeadAttention, Conv, PositionwiseFeedForward, _gen_bias_mask ,_gen_timing_signal, share_embedding, NoamOpt, _get_attn_subsequent_mask,  get_input_from_batch, get_output_from_batch, top_k_top_p_filtering
 from utils import config
 import random
 # from numpy import random
@@ -82,7 +82,7 @@ class Encoder(tf.keras.layers.Layer):
             #self.enc = nn.ModuleList([EncoderLayer(*params) for _ in range(num_layers)])
             self.enc = [EncoderLayer(*params) for _ in range(num_layers)]
         
-        self.layer_norm = LayerNorm(hidden_size)
+        self.layer_norm = tf.keras.layers.LayerNormalization(hidden_size)
         #self.input_dropout = nn.Dropout(input_dropout)
         self.input_dropout = tf.keras.layers.Dropout(input_dropout)
         
@@ -289,7 +289,8 @@ class Transformer(tf.keras.Model):
         #self.criterion = nn.NLLLoss(ignore_index=config.PAD_idx)
         self.criterion = tf.keras.losses.CategoricalCrossentropy(from_logits=True, reduction='none')
         if (config.label_smoothing):
-            self.criterion = LabelSmoothing(size=self.vocab_size, padding_idx=config.PAD_idx, smoothing=0.1)
+            ###### ignore label smoothing
+            #self.criterion = LabelSmoothing(size=self.vocab_size, padding_idx=config.PAD_idx, smoothing=0.1)
             #self.criterion_ppl = nn.NLLLoss(ignore_index=config.PAD_idx)
             self.criterion_ppl = tf.keras.losses.CategoricalCrossentropy(from_logits=True, reduction='none')
         #self.optimizer = torch.optim.Adam(self.parameters(), lr=config.lr)
@@ -314,31 +315,17 @@ class Transformer(tf.keras.Model):
             os.makedirs(self.model_dir)
         self.best_path = ""
 
-    def save_model(self, running_avg_ppl, iter, f1_g,f1_b,ent_g,ent_b):
 
-        state = {
-            'iter': iter,
-            'encoder_state_dict': self.encoder.state_dict(),
-            'decoder_state_dict': self.decoder.state_dict(),
-            'generator_dict': self.generator.state_dict(),
-            'decoder_key_state_dict': self.decoder_key.state_dict(),
-            'embedding_dict': self.embedding.state_dict(),
-            'optimizer': self.optimizer.state_dict(),
-            'current_loss': running_avg_ppl
-        }
-        model_save_path = os.path.join(self.model_dir, 'model_{}_{:.4f}_{:.4f}_{:.4f}_{:.4f}_{:.4f}'.format(iter,running_avg_ppl,f1_g,f1_b,ent_g,ent_b) )
-        self.best_path = model_save_path
-        torch.save(state, model_save_path)
 
     def train_one_batch(self, batch, iter, train=True):
         enc_batch, _, _, enc_batch_extend_vocab, extra_zeros, _, _ = get_input_from_batch(batch)
         dec_batch, _, _, _, _ = get_output_from_batch(batch)
-        """
+        
         if(config.noam):
             self.optimizer.optimizer.zero_grad()
         else:
             self.optimizer.zero_grad()
-        """
+        
         ## Encode
         
         #mask_src = enc_batch.data.eq(config.PAD_idx).unsqueeze(1)
@@ -590,7 +577,7 @@ class ACT_basic(tf.keras.layers.Layer):
 
             # update running part in the weighted state and keep the rest
             #previous_state = ((state * update_weights.unsqueeze(-1)) + (previous_state * (1 - update_weights.unsqueeze(-1))))
-            previous_state = ((state * tf.expand_dims(update_weights, axis = -1) + (previous_state * (1 - tf.expand_dims(update_weights, axis = -1))))
+            previous_state = ((state * tf.expand_dims(update_weights, axis = -1) + (previous_state * (1 - tf.expand_dims(update_weights, axis = -1)))))
                               
             if(decoding):
                 #if(step==0):  previous_att_weight = torch.zeros_like(attention_weight).cuda()      ## [B, S, src_size]

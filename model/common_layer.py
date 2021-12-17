@@ -11,10 +11,10 @@ import matplotlib.pyplot as plt
 
 if(config.model == 'trs'):
     from utils.beam_omt import Translator
-elif(config.model == 'seq2seq'):
-    from utils.beam_ptr import Translator
-elif(config.model == 'multi-trs'):
-    from utils.beam_omt_multiplex import Translator
+#elif(config.model == 'seq2seq'):
+#    from utils.beam_ptr import Translator
+#elif(config.model == 'multi-trs'):
+#    from utils.beam_omt_multiplex import Translator
 elif(config.model == 'experts'):
     from utils.beam_omt_experts import Translator
 
@@ -430,7 +430,8 @@ def _gen_timing_signal(length, channels, min_timescale=1.0, max_timescale=1.0e4)
 
     signal = np.concatenate([np.sin(scaled_time), np.cos(scaled_time)], axis=1)
     signal = np.pad(signal, [[0, 0], [0, channels % 2]], 'constant', constant_values=[0.0, 0.0])
-    signal =  signal.reshape([1, length, channels])
+    signal = tf.reshape(signal, [1,length, channels])
+    #signal =  signal.reshape([1, length, channels])
     return tf.cast(signal, dtype=tf.float32)
 
 def _get_attn_subsequent_mask(size):
@@ -592,8 +593,8 @@ def get_attn_key_pad_mask(seq_k, seq_q):
     return padding_mask
 
 def get_input_from_batch(batch):
-    enc_batch = batch["input_batch"]
-    enc_lens = batch["input_lengths"]
+    enc_batch = batch[0] #enc_batch = batch["input_batch"]
+    enc_lens = batch[1] # enc_lens = batch["input_lengths"]
     batch_size, max_enc_len = enc_batch.shape
     assert len(enc_lens) == batch_size
 
@@ -628,16 +629,20 @@ def get_input_from_batch(batch):
     return enc_batch, enc_padding_mask, enc_lens, enc_batch_extend_vocab, extra_zeros, c_t_1, coverage
 
 def get_output_from_batch(batch):
-    dec_batch = batch["target_batch"]
+    #dec_batch = batch["target_batch"]
+    dec_batch = batch[3]
     if(config.pointer_gen):
         target_batch = batch["target_ext_vocab_batch"]
     else:
         target_batch = dec_batch       
-    dec_lens_var = batch["target_lengths"]
-    max_dec_len = max(dec_lens_var)
-    assert max_dec_len == target_batch.shape[1]
+    #dec_lens_var = batch["target_lengths"]
+    dec_lens_var = batch[4]
+    #print('*******DEC BATCH*******', dec_lens_var) ----- Tensor("input_x_4:0", shape=(32, 1), dtype=int64)
+    #max_dec_len = max(dec_lens_var)
+    #max_dec_len = tf.math.reduce_max(dec_lens_var)
+    max_dec_len = target_batch.shape[1]
     dec_padding_mask = tf.cast(sequence_mask(dec_lens_var, max_len=max_dec_len), dtype=tf.float32)
-
+    
     return dec_batch, dec_padding_mask, max_dec_len, dec_lens_var, target_batch
 
 def sequence_mask(sequence_length, max_len=None):
@@ -647,9 +652,11 @@ def sequence_mask(sequence_length, max_len=None):
     seq_range = tf.range(0, max_len, dtype=tf.int32)
     seq_range_expand = tf.broadcast_to(tf.expand_dims(seq_range, 0), [batch_size, max_len])
     seq_range_expand = seq_range_expand
-    if sequence_length.is_cuda:
-        seq_range_expand = seq_range_expand.cuda()
-    seq_length_expand = tf.broadcast_to(tf.expand_dims(sequence_length, 1), seq_range_expand.shape)
+    print('sequence_length', sequence_length.shape)
+    print('seq_range_expand ', seq_range_expand.shape)
+    #seq_length_expand = tf.broadcast_to(tf.expand_dims(sequence_length, 1), seq_range_expand.shape)
+    seq_length_expand = tf.broadcast_to(sequence_length, seq_range_expand.shape)
+    print('MASK ', seq_range_expand < seq_length_expand)
     return seq_range_expand < seq_length_expand
 
 def write_config():
