@@ -4,7 +4,7 @@ import time
 import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
-from model.common_layer import EncoderLayer, DecoderLayer, MultiHeadAttention, Conv, PositionwiseFeedForward, _gen_bias_mask ,_gen_timing_signal, share_embedding, NoamOpt, _get_attn_subsequent_mask,  get_input_from_batch, get_output_from_batch, top_k_top_p_filtering
+from model.common_layer import EncoderLayer, DecoderLayer, MultiHeadAttention, Conv, PositionwiseFeed, _gen_bias_mask ,_gen_timing_signal, share_embedding, NoamOpt, _get_attn_subsequent_mask,  get_input_from_batch, get_output_from_batch, top_k_top_p_filtering
 from utils import config
 from utils.metric import rouge, moses_multi_bleu, _prec_recall_f1_score, compute_prf, compute_exact_match
 from copy import deepcopy
@@ -49,7 +49,7 @@ class Encoder(layers.Layer):
             self.remainders = None
             self.n_updates = None
     
-    def call(self, inputs, mask, training=True): #ADHOC = TRUE
+    def __call__(self, inputs, mask, training=True): #ADHOC = TRUE
         #Add input dropout
         
         inputs = tf.cast(inputs, dtype = tf.float32) #inputs dim (32, 38)
@@ -119,7 +119,7 @@ class Decoder(layers.Layer):
         self.input_dropout = layers.Dropout(input_dropout)
 
 
-    def forward(self, inputs, encoder_output, mask, training=True):#ADHOC = TRUE
+    def __call__(self, inputs, encoder_output, mask, training=True):#ADHOC = TRUE
         mask_src, mask_trg = mask
         dec_mask = tf.math.greater(mask_trg + self.mask[:, :mask_trg.shape[-1], :mask_trg.shape[-1]], 0)
         #Add input dropout
@@ -173,9 +173,9 @@ class MulDecoder(layers.Layer):
         self.layer_norm = layers.LayerNormalization(epsilon=1e-6)
         self.input_dropout = layers.Dropout(input_dropout)
     
-    def forward(self, inputs, encoder_output, mask, attention_epxert, training=True):#ADHOC = TRUE
+    def __call__(self, inputs, encoder_output, mask, attention_epxert, training=True):#ADHOC = TRUE
         mask_src, mask_trg = mask
-        dec_mask = tf.math.greater(mask_trg + self.mask[:, :mask_trg.shape[-1], :mask_trg.shape[-1]], 0)
+        dec_mask = tf.math.greater(tf.cast(mask_trg, tf.uint8) + self.mask[:, :mask_trg.shape[-1], :mask_trg.shape[-1]], 0)
         #Add input dropout
         x = self.input_dropout(inputs)
         if (not config.project):
@@ -219,7 +219,7 @@ class Generator(layers.Layer):
         self.proj = layers.Dense(vocab)
         self.p_gen_linear = layers.Dense(1)
 
-    def forward(self, x, attn_dist=None, enc_batch_extend_vocab=None, extra_zeros=None, temp=1, beam_search=False, attn_dist_db=None):
+    def __call__(self, x, attn_dist=None, enc_batch_extend_vocab=None, extra_zeros=None, temp=1, beam_search=False, attn_dist_db=None):
         if config.pointer_gen:
             p_gen = self.p_gen_linear(x)
             alpha = tf.math.sigmoid(p_gen)
@@ -246,7 +246,7 @@ class Transformer_experts(layers.Layer):
         self.vocab = vocab
         self.vocab_size = vocab.n_words
 
-        self.embedding = share_embedding(self.vocab, config.pretrain_emb)
+        self.embedding = Embeddinglayer(self.vocab.n_words, config.emb_dim)
         self.encoder = Encoder(config.emb_dim, config.hidden_dim, num_layers=config.hop, num_heads=config.heads, 
                                 total_key_depth=config.depth, total_value_depth=config.depth,
                                 filter_size=config.filter,universal=config.universal)
@@ -287,7 +287,7 @@ class Transformer_experts(layers.Layer):
             #os.makedirs(self.model_dir)
         #self.best_path = ""
     
-    def call(self, batch, training=True): #ADHC training=True
+    def __call__(self, batch, training=True): #ADHC training=True
         enc_batch, _, _, enc_batch_extend_vocab, extra_zeros, _, _ = get_input_from_batch(batch)
         dec_batch, _, _, _, _ = get_output_from_batch(batch)
         ## Encode
@@ -315,7 +315,7 @@ class Transformer_experts(layers.Layer):
             attention_parameters = self.attention_activation(tf.cast(batch[5], dtype=tf.float32)*1000) #'target_program'
         attention_parameters = tf.expand_dims(tf.expand_dims(attention_parameters, axis=-1), axis=-1) # (batch_size, expert_num, 1, 1)
         # Decode 
-        sos_token = tf.expand_dims(tf.cast([config.SOS_idx] * enc_batch.shape[0], dtype=tf.int64), axis=1)
+        sos_token = tf.expand_dims(tf.cast([config.SOS_idx] * enc_batch.shape[0], dtype=tf.int32), axis=1)
         dec_batch_shift = tf.concat((sos_token,dec_batch[:, :-1]), axis=1)
         mask_trg = tf.expand_dims(tf.math.equal(dec_batch_shift, config.PAD_idx), axis=1)
        
@@ -432,7 +432,7 @@ class ACT_basic(layers.Layer):
         self.p = layers.Dense(1, bias_initializer='ones')
         self.threshold = 1 - 0.1
     
-    def forward(self, state, inputs, fn, time_enc, pos_enc, max_hop, encoder_output=None, decoding=False):
+    def __call__(self, state, inputs, fn, time_enc, pos_enc, max_hop, encoder_output=None, decoding=False):
         # init_hdd
         ## [B, S]
         halting_probability = tf.zeros(inputs.shape[0],inputs.shape[1])

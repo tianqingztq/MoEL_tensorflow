@@ -52,7 +52,7 @@ class EncoderLayer(layers.Layer):
         self.layer_norm_mha = layers.LayerNormalization(epsilon=1e-6)
         self.layer_norm_ffn = layers.LayerNormalization(epsilon=1e-6)
 
-    def forward(self, inputs, mask=None, training=True):
+    def __call__(self, inputs, mask=None, training=True):
         x = inputs
         
         # Layer Normalization
@@ -107,7 +107,7 @@ class DecoderLayer(layers.Layer):
         self.layer_norm_ffn = layers.LayerNormalization(epsilon=1e-6)
         # self.layer_norm_end = layers.LayerNormalization(epsilon=1e-6)
     
-    def forward(self, inputs, training=True):
+    def __call__(self, inputs, training=True):
         """
         NOTE: Inputs is a tuple consisting of decoder inputs and encoder output
         """
@@ -202,7 +202,7 @@ class MultiExpertMultiHeadAttention(layers.Layer):
         shape = x.shape
         return tf.reshape(tf.transpose(x, perm=[0, 3, 1, 2, 4]), [shape[0], shape[3], self.num_experts, shape[4]*self.num_heads])
     
-    def forward(self, queries, keys, values, mask):
+    def __call__(self, queries, keys, values, mask):
         
         # Do a linear for each component
         queries = self.query_linear(queries)
@@ -218,7 +218,9 @@ class MultiExpertMultiHeadAttention(layers.Layer):
         logits = tf.matmul(queries, keys, transpose_b=True)
         
         if mask is not None:
-            logits += (mask * -1e18)
+            #logits += (mask * -1e18)
+            mask = tf.expand_dims(tf.expand_dims(mask, 1), 1)
+            logits = logits*(1 - tf.cast(mask, tf.float32))+ (-1e18) * tf.cast(mask, tf.float32) 
 
         ## attention weights 
         # attetion_weights = logits.sum(dim=1)/self.num_heads
@@ -308,7 +310,7 @@ class MultiHeadAttention(layers.Layer):
         shape = x.shape
         return tf.reshape(tf.transpose(x, perm=[0, 2, 1, 3]), [shape[0], shape[2], shape[3]*self.num_heads])
     
-    def forward(self, queries, keys, values, mask):
+    def __call__(self, queries, keys, values, mask):
         
         # Do a linear for each component
         queries = self.query_linear(queries)
@@ -324,7 +326,9 @@ class MultiHeadAttention(layers.Layer):
         logits = tf.matmul(queries, keys, transpose_b=True)
         
         if mask is not None:
-            logits += (mask * -1e18)
+            #logits += (mask * -1e18)
+            mask = tf.expand_dims(mask, 1)
+            logits = logits*(1 - tf.cast(mask, tf.float32))+ (-1e18) * tf.cast(mask, tf.float32)
 
         ## attention weights 
         attetion_weights = tf.reduce_sum(logits, axis=1)/self.num_heads
@@ -361,7 +365,7 @@ class Conv(layers.Layer):
         self.output_size = output_size
         self.kernel_size = kernel_size
 
-    def forward(self, inputs, training=True):
+    def __call__(self, inputs, training=True):
         inputs = tf.pad(tf.transpose(inputs, perm=[0, 2, 1]), self.padding, "CONSTANT") 
         outputs = layers.Conv1D(self.output_size, self.kernel_size, padding='valid')(tf.transpose(inputs, [0, 2, 1]), training=training)
         return outputs
@@ -392,7 +396,7 @@ class PositionwiseFeedForward(layers.Layer):
         self.relu_layer = layers.ReLU()
         self.dropout_layer = layers.Dropout(dropout)
         
-    def forward(self, inputs):
+    def __call__(self, inputs):
         x = inputs
         for i, cur_layer in enumerate(self.layer_config):
             if i < len(self.layer_config)-1:
@@ -446,10 +450,7 @@ def _get_attn_subsequent_mask(size):
     attn_shape = (1, size, size)
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
     subsequent_mask = tf.cast(subsequent_mask, dtype=tf.uint8)
-    if(config.USE_CUDA):
-        return subsequent_mask.cuda()
-    else:
-        return subsequent_mask
+    return subsequent_mask
 
 class OutputLayer(layers.Layer):
     """
@@ -513,45 +514,57 @@ def gen_embeddings(vocab):
         print('Pre-trained: %d (%.2f%%)' % (pre_trained, pre_trained * 100.0 / vocab.n_words))
     return embeddings
 
-class TF_Embedding(layers.Layer):
-    def __init__(self, vocab, d_model, padding_idx=0, pretrain=True, **kwargs):
-        super(TF_Embedding, self).__init__(**kwargs)
-        self.input_dim = vocab.n_words
-        self.output_dim = d_model
-        self.padding_idx = padding_idx
-        if pretrain:
-            pre_embedding = gen_embeddings(vocab)
-            self.embeddings =  layers.Embedding(self.input_dim, self.output_dim, weights=[pre_embedding])
-        else:
-            self.embeddings = self.add_weight(
-                shape=(self.input_dim, self.output_dim),
-                initializer='random_normal',
-                dtype='float32')
+# class TF_Embedding(layers.Layer):
+#     def __init__(self, vocab, d_model, padding_idx=0, pretrain=True, **kwargs):
+#         super(TF_Embedding, self).__init__(**kwargs)
+#         self.input_dim = vocab.n_words
+#         self.output_dim = d_model
+#         self.padding_idx = padding_idx
+#         if pretrain:
+#             pre_embedding = gen_embeddings(vocab)
+#             self.embeddings =  layers.Embedding(self.input_dim, self.output_dim, weights=[pre_embedding])
+#         else:
+#             self.embeddings = self.add_weight(
+#                 shape=(self.input_dim, self.output_dim),
+#                 initializer='random_normal',
+#                 dtype='float32')
 
-    def call(self, inputs): 
-        def compute_mask():
-            return tf.not_equal(inputs, self.padding_idx)
+#     def call(self, inputs): 
+#         def compute_mask():
+#             return tf.not_equal(inputs, self.padding_idx)
         
-        out = tf.nn.embedding_lookup(self.embeddings, inputs)
-        masking = compute_mask() # [B, T], bool
-        masking = tf.cast(tf.tile(masking[:,:, tf.newaxis], [1,1,self.output_dim]), 
-                          dtype=tf.float32) # [B, T, D]
-        return tf.multiply(out, masking)
+#         out = tf.nn.embedding_lookup(self.embeddings, inputs)
+#         masking = compute_mask() # [B, T], bool
+#         masking = tf.cast(tf.tile(masking[:,:, tf.newaxis], [1,1,self.output_dim]), 
+#                           dtype=tf.float32) # [B, T, D]
+#         return tf.multiply(out, masking)
 
-class Embeddings(layers.Layer):
-    def __init__(self, vocab, d_model, padding_idx=None, pretrain=True):
-        super(Embeddings, self).__init__()
-        self.lut = TF_Embedding(vocab, d_model, padding_idx=padding_idx, pretrain=pretrain)
+# class Embeddings(layers.Layer):
+#     def __init__(self, vocab, d_model, padding_idx=None, pretrain=True):
+#         super(Embeddings, self).__init__()
+#         self.lut = TF_Embedding(vocab, d_model, padding_idx=padding_idx, pretrain=pretrain)
+#         self.d_model = d_model
+
+#     def forward(self, x):
+#         return self.lut(x) * math.sqrt(self.d_model)
+
+# def share_embedding(vocab, pretrain=True):
+#     embedding = Embeddings(vocab, config.emb_dim, padding_idx=config.PAD_idx, pretrain=pretrain)
+#     #embedding.lut.weight.data.copy_(torch.FloatTensor(pre_embedding))
+#     #embedding.lut.weight.data.requires_grad = True
+#     return embedding
+
+class Embeddinglayer(layers.Layer):
+    def __init__(self, vocab_size, d_model):
+        # model hyper parameter variables
+        super(Embeddinglayer, self).__init__()
+        self.vocab_size = vocab_size
         self.d_model = d_model
+        self.embedding = layers.Embedding(vocab_size, d_model)
 
-    def forward(self, x):
-        return self.lut(x) * math.sqrt(self.d_model)
-
-def share_embedding(vocab, pretrain=True):
-    embedding = Embeddings(vocab, config.emb_dim, padding_idx=config.PAD_idx, pretrain=pretrain)
-    #embedding.lut.weight.data.copy_(torch.FloatTensor(pre_embedding))
-    #embedding.lut.weight.data.requires_grad = True
-    return embedding
+    def __call__(self, sequences):
+        output = self.embedding(sequences) * tf.sqrt(tf.cast(self.d_model, dtype=tf.float32))
+        return output
 
 class NoamOpt:
     "Optim wrapper that implements rate."
@@ -615,18 +628,7 @@ def get_input_from_batch(batch):
     if config.is_coverage:
         coverage = tf.zeros(enc_batch.shape)
 
-    if config.USE_CUDA:
-        enc_padding_mask = enc_padding_mask.cuda()
-        if enc_batch_extend_vocab is not None:
-            enc_batch_extend_vocab = enc_batch_extend_vocab.cuda()
-        if extra_zeros is not None:
-            extra_zeros = extra_zeros.cuda()
-        c_t_1 = c_t_1.cuda()
-
-        if coverage is not None:
-            coverage = coverage.cuda()
-
-    return enc_batch, enc_padding_mask, enc_lens, enc_batch_extend_vocab, extra_zeros, c_t_1, coverage
+    return enc_batch, enc_padding_mask, enc_lens, enc_batch_extend_vocab, extra_zeros, c_t_1
 
 def get_output_from_batch(batch):
     #dec_batch = batch["target_batch"]

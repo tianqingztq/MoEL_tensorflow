@@ -41,17 +41,16 @@ def train(model, batch, data_loader_val):
         model.load_weights(checkpoint_path)
         print("load weight from: %s" % checkpoint_path)
 
-    criterion = tf.keras.losses.CategoricalCrossentropy(from_logits=True, reduction='none')
-    if (config.label_smoothing):
-        criterion = tf.keras.losses.CategoricalCrossentropy(from_logits=True, reduction='none', label_smoothing=0.1)
+    criterion = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
     optimizer = tf.keras.optimizers.Adam(lr=config.lr)
-    if(config.noam):
-        optimizer = NoamOpt(config.hidden_dim, 1, 8000, tf.keras.optimizers.Adam(lr=0, beta_1=0.9, beta_2=0.98, epsilon=1e-9))
+#     if(config.noam):
+#         optimizer = NoamOpt(config.hidden_dim, 1, 8000, tf.keras.optimizers.Adam(lr=0, beta_1=0.9, beta_2=0.98, epsilon=1e-9))
     
-    train_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
-    train_accuracy = tf.keras.metrics.SparseCategoricalAccuracy('train_accuracy')
-    test_loss = tf.keras.metrics.Mean('validation_loss', dtype=tf.float32)
-    test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy('validation_accuracy')
+    
+    training_loss = tf.keras.metrics.Mean('train_loss', dtype=tf.float32)
+    training_accuracy = tf.keras.metrics.SparseCategoricalAccuracy('train_accuracy')
+    testing_loss = tf.keras.metrics.Mean('validation_loss', dtype=tf.float32)
+    testing_accuracy = tf.keras.metrics.SparseCategoricalAccuracy('validation_accuracy')
 
     @tf.function 
     def train_step(input_x, training = True):
@@ -59,43 +58,43 @@ def train(model, batch, data_loader_val):
         if training:
             with tf.GradientTape() as tape:
                 logit, logit_prob = model(input_x, training)
-                train_loss = criterion(tf.reshape(logit, [-1, logit.shape[-1]]), tf.reshape(dec_batch, -1)) + criterion(logit_prob, tf.cast(input_x['program_label'], dtype=tf.int64))
+                train_loss = criterion(tf.reshape(dec_batch, -1), tf.reshape(logit, [-1, logit.shape[-1]])) + criterion(tf.cast(input_x[6], dtype=tf.int32), logit_prob)
             gradients = tape.gradient(train_loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-            train_pred_program = np.argmax(logit_prob.numpy(), axis=1)
+            #train_pred_program = np.argmax(logit_prob.numpy(), axis=1)
+            training_loss.update_state(train_loss)
+            training_accuracy.update_state(input_x[6], train_pred_program)
         else:
             logit, logit_prob = model(input_x, training)
-            test_loss = criterion(tf.reshape(logit, [-1, logit.shape[-1]]), tf.reshape(dec_batch, -1)) + criterion(logit_prob, tf.cast(input_x['program_label'], dtype=tf.int64))
-            test_pred_program = np.argmax(logit_prob.numpy(), axis=1)
-        train_loss.update_state(train_loss)
-        train_accuracy.update_state(input_x["program_label"], train_pred_program)
-        test_loss.update_state(test_loss)
-        test_accuracy.update_state(input_x["program_label"], test_pred_program)
+            test_loss = criterion(tf.reshape(dec_batch, -1), tf.reshape(logit, [-1, logit.shape[-1]])) + criterion(tf.cast(input_x[6], dtype=tf.int32), logit_prob)
+            #test_pred_program = np.argmax(logit_prob.numpy(), axis=1)
+            testing_loss.update_state(test_loss)
+            testing_accuracy.update_state(input_x[6], test_pred_program)
 
     try:
-        train_loss.reset_states()
-        train_accuracy.reset_states()
+        training_loss.reset_states()
+        training_accuracy.reset_states()
         for n_iter in tqdm(range(1000000)):
             train_step(batch, training = True)        
             if((n_iter+1)%check_iter==0):
-                print("[train iter %d] [%s]: %0.3f [%s]: %0.3f  [%s]: %0.3f" %  (n_iter+1, "loss", train_loss.result(), "ppl", math.exp(train_loss.result()), "emo_acc", train_accuracy.result()))
-                train_loss.reset_states()
-                train_accuracy.reset_states()
+                print("[train iter %d] [%s]: %0.3f [%s]: %0.3f  [%s]: %0.3f" %  (n_iter+1, "loss", training_loss.result(), "ppl", math.exp(training_loss.result()), "emo_acc", training_accuracy.result()))
+                training_loss.reset_states()
+                training_accuracy.reset_states()
 
                 model.save_weights(checkpoint_path, overwrite=True)
 
-                test_loss.reset_states()
-                test_accuracy.reset_states()
+                testing_loss.reset_states()
+                testing_accuracy.reset_states()
                 pbar = tqdm(enumerate(data_loader_val),total=len(data_loader_val))
                 for j, test_batch in pbar:
                     train_step(test_batch, training = False)
-                print("[test iter %d] [%s]: %0.3f [%s]: %0.3f  [%s]: %0.3f" %  (n_iter+1, "loss", test_loss.result(), "ppl", math.exp(test_loss.result()), "emo_acc", test_accuracy.result()))
+                print("[test iter %d] [%s]: %0.3f [%s]: %0.3f  [%s]: %0.3f" %  (n_iter+1, "loss", testing_loss.result(), "ppl", math.exp(testing_loss.result()), "emo_acc", testing_accuracy.result()))
                 
                 if (config.model == "experts" and n_iter<13000):
                     continue
-                if math.exp(test_loss.result()) < best_ppl:
+                if math.exp(testing_loss.result()) < best_ppl:
                     model.save(save_model_path)
-                    best_ppl = math.exp(test_loss.result())
+                    best_ppl = math.exp(testing_loss.result())
                 else:
                     patient += 1
                 if patient > 2:
@@ -107,21 +106,19 @@ def train(model, batch, data_loader_val):
 if not config.test:
     train(model, next(data_iter), data_loader_val)
 else:
-    test_loss = tf.keras.metrics.Mean('validation_loss', dtype=tf.float32)
-    test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy('validation_accuracy')
+    testing_loss = tf.keras.metrics.Mean('validation_loss', dtype=tf.float32)
+    testing_accuracy = tf.keras.metrics.SparseCategoricalAccuracy('validation_accuracy')
     
-    criterion = tf.keras.losses.CategoricalCrossentropy(from_logits=True, reduction='none')
-    if (config.label_smoothing):
-        criterion = tf.keras.losses.CategoricalCrossentropy(from_logits=True, reduction='none', label_smoothing=0.1)
+    criterion = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
     
     model = tf.keras.models.load_model(save_model_path)
     pbar = tqdm(enumerate(data_loader_val),total=len(data_loader_val))
     for j, test_batch in pbar:
         dec_batch, _, _, _, _ = get_output_from_batch(test_batch)
         logit, logit_prob = model(test_batch, training=False)
-        test_loss = criterion(tf.reshape(logit, [-1, logit.shape[-1]]), tf.reshape(dec_batch, -1)) + criterion(logit_prob, tf.cast(test_batch['program_label'], dtype=tf.int64))
-        test_pred_program = np.argmax(logit_prob.numpy(), axis=1)
-        test_loss.update_state(test_loss)
-        test_accuracy.update_state(test_batch["program_label"], test_pred_program)
-    print("[test metrics] [%s]: %0.3f [%s]: %0.3f  [%s]: %0.3f" %  ("loss", test_loss.result(), "ppl", math.exp(test_loss.result()), "emo_acc", test_accuracy.result()))
+        test_loss = criterion(tf.reshape(logit, [-1, logit.shape[-1]]), tf.reshape(dec_batch, -1)) + criterion(logit_prob, tf.cast(test_batch['program_label'], dtype=tf.int32))
+        #test_pred_program = np.argmax(logit_prob.numpy(), axis=1)
+        testing_loss.update_state(test_loss)
+        testing_accuracy.update_state(test_batch["program_label"], test_pred_program)
+    print("[test metrics] [%s]: %0.3f [%s]: %0.3f  [%s]: %0.3f" %  ("loss", testing_loss.result(), "ppl", math.exp(testing_loss.result()), "emo_acc", testing_accuracy.result()))
 
